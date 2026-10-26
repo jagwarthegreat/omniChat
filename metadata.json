@@ -1,0 +1,6 @@
+{
+  "name": "OmniChat — Unified Messaging",
+  "description": "Mobile-first unified messaging client connecting WhatsApp, Messenger, Instagram, Telegram, Discord, and Matrix in one synchronized inbox.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
