@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { Search, Plus, MessageSquareDashed, RefreshCw } from 'lucide-react';
+import { Search, Plus, MessageSquareDashed, RefreshCw, AlertTriangle } from 'lucide-react';
 import { useMessaging } from '../../context/MessagingContext';
 import { ServiceFilterTabs } from './ServiceFilterTabs';
 import { ConversationItem } from './ConversationItem';
@@ -19,7 +19,12 @@ export const ConversationList: React.FC<ConversationListProps> = ({ onStartNewCh
     setSearchQuery,
     syncWhatsAppChats,
     isSyncingWhatsApp,
+    bridges,
+    setActiveTab,
   } = useMessaging();
+
+  const whatsappNeedsRevalidation =
+    bridges.find((b) => b.id === 'whatsapp')?.connectionState === 'needs_auth';
 
   const filteredConversations = useMemo(() => {
     return conversations
@@ -83,6 +88,23 @@ export const ConversationList: React.FC<ConversationListProps> = ({ onStartNewCh
       {/* Filter Tabs */}
       <ServiceFilterTabs />
 
+      {/* WhatsApp re-validation banner */}
+      {whatsappNeedsRevalidation && (
+        <div className="px-3.5 py-2 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200/70 dark:border-amber-900/40 flex items-center justify-between gap-2 text-xs text-amber-900 dark:text-amber-200">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+            <span className="truncate font-medium">WhatsApp needs re-validation</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveTab('bridges')}
+            className="px-2.5 py-0.5 rounded-md font-semibold text-[11px] bg-white dark:bg-slate-800 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-800 hover:bg-amber-100 dark:hover:bg-slate-700 transition-colors shrink-0"
+          >
+            Bridge Network
+          </button>
+        </div>
+      )}
+
       {/* Live WhatsApp Sync Status Bar */}
       {serviceFilter === 'whatsapp' && (
         <div className="px-3.5 py-2 bg-emerald-50 dark:bg-emerald-950/30 border-b border-emerald-100 dark:border-emerald-900/40 flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300">
@@ -114,6 +136,7 @@ export const ConversationList: React.FC<ConversationListProps> = ({ onStartNewCh
                 conversation={conv}
                 isSelected={activeRoomId === conv.roomId}
                 onSelect={() => setActiveRoomId(conv.roomId)}
+                onRevalidate={() => setActiveTab('bridges')}
               />
             ))}
           </div>

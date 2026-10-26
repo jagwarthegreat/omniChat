@@ -7,12 +7,14 @@ interface ConversationItemProps {
   conversation: ConversationSummary;
   isSelected: boolean;
   onSelect: () => void;
+  onRevalidate?: () => void;
 }
 
 export const ConversationItem: React.FC<ConversationItemProps> = ({
   conversation,
   isSelected,
   onSelect,
+  onRevalidate,
 }) => {
   const formatTime = (timestamp: number) => {
     const diff = Date.now() - timestamp;
@@ -88,13 +90,36 @@ export const ConversationItem: React.FC<ConversationItemProps> = ({
           </p>
 
           <div className="flex items-center gap-1.5 shrink-0">
-            {isDegraded && (
+            {conversation.connectionState === 'needs_auth' ? (
               <span
-                title="Bridge degraded or requires re-authentication"
-                className="text-amber-500"
+                role="button"
+                tabIndex={0}
+                title="Bridge requires manual re-validation"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRevalidate?.();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onRevalidate?.();
+                  }
+                }}
+                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-900/60 transition-colors"
               >
-                <AlertTriangle className="w-3.5 h-3.5" />
+                <AlertTriangle className="w-3 h-3" />
+                Re-validate
               </span>
+            ) : (
+              isDegraded && (
+                <span
+                  title="Bridge degraded or requires re-authentication"
+                  className="text-amber-500"
+                >
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                </span>
+              )
             )}
 
             {conversation.isMuted && (

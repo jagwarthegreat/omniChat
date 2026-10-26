@@ -582,6 +582,16 @@ app.get('/api/whatsapp/status', (_req: Request, res: Response) => {
   });
 });
 
+// 1b. Lightweight latency probe (no chat sync)
+app.get('/api/whatsapp/ping', (_req: Request, res: Response) => {
+  res.json({
+    ok: true,
+    connectionState,
+    phone: connectedPhone ? `+${connectedPhone}` : sqliteAuthStore.getMeta('connectedPhone') || '+639945864387',
+    serverTime: Date.now(),
+  });
+});
+
 // 2. Fetch Synced Real WhatsApp Chats & Groups
 app.get('/api/whatsapp/chats', (_req: Request, res: Response) => {
   const chatsList = Array.from(chatsStore.values()).sort(
@@ -925,6 +935,15 @@ app.get('/api/whatsapp/events', (req: Request, res: Response) => {
     if (idx !== -1) sseClients.splice(idx, 1);
   });
 });
+
+// Keep SSE clients / proxies from idle-dropping the stream
+setInterval(() => {
+  if (sseClients.length === 0) return;
+  broadcastSSE('ping', {
+    serverTime: Date.now(),
+    connectionState,
+  });
+}, 15_000);
 
 // 10. Send Message
 app.post('/api/whatsapp/messages/send', async (req: Request, res: Response) => {

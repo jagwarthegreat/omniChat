@@ -124,6 +124,7 @@ export interface BridgeInfo {
   eventsProcessed: number;
   accountIdentifier?: string;
   errorDetail?: string;
+  latencyMs?: number;
   capabilities: BridgeCapabilities;
   knownLimitations: string[];
   securityNote: string;

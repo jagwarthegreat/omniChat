@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   ServiceId,
   ConversationSummary,
@@ -12,6 +12,8 @@ import {
 import { INITIAL_CONVERSATIONS, INITIAL_MESSAGES } from '../config/seedData';
 import { INITIAL_BRIDGES, SERVICES_CONFIG } from '../config/services';
 import { playMessageSound, showPushNotification, triggerHaptic } from '../services/notificationService';
+import { useWhatsAppBridgeEvents } from '../hooks/useWhatsAppBridgeEvents';
+import { useWhatsAppHeartbeat } from '../hooks/useWhatsAppHeartbeat';
 
 export interface InAppToast {
   id: string;
@@ -35,6 +37,8 @@ interface MessagingContextType {
   settings: AppSettings;
   inAppToast: InAppToast | null;
   isTyping: boolean;
+  bridgeLatencyMs: number | null;
+  whatsappBridgeHealthy: boolean;
 
   // Actions
   setActiveRoomId: (roomId: string | null) => void;
@@ -124,6 +128,12 @@ export const MessagingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [activeTab, setActiveTab] = useState<'inbox' | 'search' | 'bridges' | 'matrix' | 'settings'>('inbox');
   const [inAppToast, setInAppToast] = useState<InAppToast | null>(null);
   const [isTyping, setIsTyping] = useState(false);
+  const [bridgeLatencyMs, setBridgeLatencyMs] = useState<number | null>(null);
+  const activeRoomIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeRoomIdRef.current = activeRoomId;
+  }, [activeRoomId]);
 
   // Sync to local storage
   useEffect(() => {
@@ -153,6 +163,17 @@ export const MessagingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const data = await res.json();
 
       if (data.success && Array.isArray(data.chats) && data.chats.length > 0) {
+        const waState: ConnectionState =
+          data.connectionState === 'qr_ready'
+            ? 'needs_auth'
+            : data.connectionState === 'connected' ||
+                data.connectionState === 'connecting' ||
+                data.connectionState === 'disconnected' ||
+                data.connectionState === 'needs_auth' ||
+                data.connectionState === 'error'
+              ? data.connectionState
+              : 'connected';
+
         const liveConvs: ConversationSummary[] = data.chats.map((c: any) => ({
           roomId: c.jid,
           service: 'whatsapp' as const,
@@ -168,7 +189,7 @@ export const MessagingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           unreadCount: c.unreadCount || 0,
           isEncrypted: false,
           bridgeTrustNotice: 'Bridged via WhatsApp Multi-Device session (Baileys).',
-          connectionState: 'connected' as const,
+          connectionState: waState,
           capabilities: SERVICES_CONFIG.whatsapp.defaultCapabilities,
           lastActivityAt: c.lastActivityAt || Date.now(),
           lastMessageSender: c.lastMessageSender || '',
@@ -209,14 +230,31 @@ export const MessagingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, []);
 
-  // Sync WhatsApp live backend status and events
+  // Backup declared early so bridge hooks can reference it
+  const backupWhatsAppSession = useCallback(async () => {
+    try {
+      const res = await fetch('/api/whatsapp/session/backup');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && data.backup && data.backup.keysCount > 0) {
+          localStorage.setItem('omnichat_whatsapp_session_backup', JSON.stringify(data.backup));
+          return data.backup;
+        }
+      }
+    } catch (e) {
+      console.warn('Could not backup WhatsApp session to localStorage:', e);
+    }
+    return null;
+  }, []);
+
+  // Initial WhatsApp status fetch (SSE + heartbeat take over after mount)
   useEffect(() => {
-    // 1. Initial status fetch
     fetch('/api/whatsapp/status')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data && data.connectionState) {
-          const mappedState = data.connectionState === 'qr_ready' ? 'needs_auth' : data.connectionState;
+          const mappedState =
+            data.connectionState === 'qr_ready' ? 'needs_auth' : data.connectionState;
           setBridges((prev) =>
             prev.map((b) =>
               b.id === 'whatsapp'
@@ -229,6 +267,11 @@ export const MessagingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                 : b
             )
           );
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.service === 'whatsapp' ? { ...c, connectionState: mappedState } : c
+            )
+          );
 
           if (data.connectionState === 'connected') {
             syncWhatsAppChats();
@@ -239,102 +282,32 @@ export const MessagingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       .catch(() => {
         // Fallback gracefully if backend not ready
       });
+  }, [syncWhatsAppChats, backupWhatsAppSession]);
 
-    // 2. Subscribe to live SSE events from backend bridge
-    let eventSource: EventSource | null = null;
-    try {
-      eventSource = new EventSource('/api/whatsapp/events');
+  useWhatsAppBridgeEvents({
+    activeRoomIdRef,
+    syncWhatsAppChats,
+    backupWhatsAppSession,
+    setBridges,
+    setMessages,
+    setConversations,
+    setInAppToast,
+  });
 
-      eventSource.addEventListener('status_change', (event: MessageEvent) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.connectionState) {
-            const mappedState = data.connectionState === 'qr_ready' ? 'needs_auth' : data.connectionState;
-            setBridges((prev) =>
-              prev.map((b) =>
-                b.id === 'whatsapp'
-                  ? {
-                      ...b,
-                      connectionState: mappedState,
-                      accountIdentifier: data.phone || b.accountIdentifier,
-                      lastSyncAt: Date.now(),
-                    }
-                  : b
-              )
-            );
+  useWhatsAppHeartbeat({
+    setBridgeLatencyMs,
+    setBridges,
+    setConversations,
+  });
 
-            if (data.connectionState === 'connected') {
-              syncWhatsAppChats();
-              backupWhatsAppSession();
-            }
-          }
-        } catch (e) {
-          console.warn('Error parsing SSE status_change:', e);
-        }
-      });
-
-      eventSource.addEventListener('chats_updated', () => {
-        syncWhatsAppChats();
-      });
-
-      eventSource.addEventListener('message_received', (event: MessageEvent) => {
-        try {
-          const raw = JSON.parse(event.data);
-          if (raw && raw.roomId) {
-            const msg: Message = {
-              ...raw,
-              reactions: Array.isArray(raw.reactions) ? raw.reactions : [],
-            };
-            setMessages((prev) => ({
-              ...prev,
-              [msg.roomId]: [...(prev[msg.roomId] || []), msg],
-            }));
-
-            setConversations((prev) =>
-              prev.map((c) =>
-                c.roomId === msg.roomId
-                  ? {
-                      ...c,
-                      lastMessage: msg.content,
-                      lastMessageSender: msg.senderName,
-                      lastActivityAt: msg.timestamp,
-                      unreadCount: c.roomId === activeRoomId ? 0 : c.unreadCount + 1,
-                    }
-                  : c
-              )
-            );
-
-            playMessageSound('incoming');
-            triggerHaptic('light');
-
-            if (msg.roomId !== activeRoomId) {
-              setInAppToast({
-                id: msg.id,
-                title: `${msg.senderName} (WhatsApp)`,
-                body: msg.content,
-                service: 'whatsapp',
-                roomId: msg.roomId,
-              });
-              showPushNotification({
-                title: msg.senderName,
-                body: msg.content,
-                service: 'whatsapp',
-                roomId: msg.roomId,
-              });
-            }
-          }
-        } catch (e) {
-          console.warn('Error parsing message_received SSE:', e);
-        }
-      });
-    } catch {
-      // Ignore SSE init failure
-    }
-
-    return () => {
-      eventSource?.close();
-    };
-  }, [syncWhatsAppChats, activeRoomId]);
+  const whatsappBridgeHealthy = useMemo(() => {
+    const wa = bridges.find((b) => b.id === 'whatsapp');
+    return (
+      wa?.connectionState === 'connected' &&
+      bridgeLatencyMs !== null &&
+      bridgeLatencyMs < 2000
+    );
+  }, [bridges, bridgeLatencyMs]);
 
   // Fetch real messages when opening a WhatsApp room
   useEffect(() => {
@@ -685,23 +658,6 @@ export const MessagingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     []
   );
 
-  // Backup active session snapshot to browser localStorage
-  const backupWhatsAppSession = useCallback(async () => {
-    try {
-      const res = await fetch('/api/whatsapp/session/backup');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.success && data.backup && data.backup.keysCount > 0) {
-          localStorage.setItem('omnichat_whatsapp_session_backup', JSON.stringify(data.backup));
-          return data.backup;
-        }
-      }
-    } catch (e) {
-      console.warn('Could not backup WhatsApp session to localStorage:', e);
-    }
-    return null;
-  }, []);
-
   // Restore WhatsApp session from local backup or SQLite
   const restoreWhatsAppSession = useCallback(
     async (backupData?: any): Promise<boolean> => {
@@ -892,6 +848,8 @@ export const MessagingProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         settings,
         inAppToast,
         isTyping,
+        bridgeLatencyMs,
+        whatsappBridgeHealthy,
         setActiveRoomId,
         setServiceFilter,
         setUnreadOnly,
